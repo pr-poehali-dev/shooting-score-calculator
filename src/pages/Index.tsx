@@ -5,8 +5,10 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import Icon from '@/components/ui/icon';
 import { useToast } from '@/hooks/use-toast';
+import { api } from '@/lib/api';
 
 interface Shot {
   id: string;
@@ -18,6 +20,7 @@ interface Shot {
 interface Shooter {
   id: string;
   name: string;
+  dbId?: number;
   totalScore: number;
   shots: Shot[];
 }
@@ -29,6 +32,10 @@ export default function Index() {
   const [timerSeconds, setTimerSeconds] = useState(0);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [timerDuration, setTimerDuration] = useState(60);
+  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [sessionName, setSessionName] = useState('');
+  const [savedSessions, setSavedSessions] = useState<any[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -51,21 +58,103 @@ export default function Index() {
     return () => clearInterval(interval);
   }, [isTimerRunning, timerSeconds, toast]);
 
-  const addShooter = () => {
+  const startNewSession = async () => {
+    try {
+      const name = sessionName || `Сессия ${new Date().toLocaleString('ru')}`;
+      const res = await api.createSession(name);
+      setSessionId(res.session_id);
+      toast({
+        title: 'Новая сессия создана',
+        description: name,
+      });
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось создать сессию',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const saveSession = async () => {
+    if (!sessionId) {
+      toast({
+        title: 'Нет активной сессии',
+        description: 'Сначала создайте новую сессию',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      await api.completeSession(sessionId);
+      toast({
+        title: 'Сессия сохранена!',
+        description: 'Результаты записаны в базу данных',
+      });
+      setSessionId(null);
+      setShooters([]);
+      setActiveShooterId('');
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось сохранить сессию',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const loadHistory = async () => {
+    setIsLoadingHistory(true);
+    try {
+      const res = await api.getSessions();
+      setSavedSessions(res.sessions);
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось загрузить историю',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
+  const addShooter = async () => {
     if (!newShooterName.trim()) return;
-    const newShooter: Shooter = {
-      id: Date.now().toString(),
-      name: newShooterName,
-      totalScore: 0,
-      shots: [],
-    };
-    setShooters([...shooters, newShooter]);
-    setActiveShooterId(newShooter.id);
-    setNewShooterName('');
-    toast({
-      title: 'Участник добавлен',
-      description: `${newShooter.name} готов к стрельбе`,
-    });
+
+    if (!sessionId) {
+      toast({
+        title: 'Создайте сессию',
+        description: 'Сначала начните новую сессию',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const res = await api.createShooter(newShooterName);
+      const newShooter: Shooter = {
+        id: Date.now().toString(),
+        name: newShooterName,
+        dbId: res.shooter_id,
+        totalScore: 0,
+        shots: [],
+      };
+      setShooters([...shooters, newShooter]);
+      setActiveShooterId(newShooter.id);
+      setNewShooterName('');
+      toast({
+        title: 'Участник добавлен',
+        description: `${newShooter.name} готов к стрельбе`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось добавить участника',
+        variant: 'destructive',
+      });
+    }
   };
 
   const removeShooter = (id: string) => {
@@ -75,11 +164,20 @@ export default function Index() {
     }
   };
 
-  const addScore = (points: number) => {
+  const addScore = async (points: number) => {
     if (!activeShooterId) {
       toast({
         title: 'Выберите участника',
         description: 'Сначала добавьте или выберите стрелка',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!sessionId) {
+      toast({
+        title: 'Нет активной сессии',
+        description: 'Создайте новую сессию для начала',
         variant: 'destructive',
       });
       return;
@@ -92,23 +190,36 @@ export default function Index() {
       timestamp: new Date(),
     };
 
-    setShooters(
-      shooters.map((shooter) => {
-        if (shooter.id === activeShooterId) {
-          return {
-            ...shooter,
-            totalScore: shooter.totalScore + points,
-            shots: [...shooter.shots, newShot],
-          };
-        }
-        return shooter;
-      })
-    );
+    const activeShooter = shooters.find((s) => s.id === activeShooterId);
+    if (!activeShooter?.dbId) return;
 
-    toast({
-      title: points > 0 ? 'Очки добавлены! 🎯' : 'Очки вычтены',
-      description: `${points > 0 ? '+' : ''}${points} баллов`,
-    });
+    try {
+      await api.createShot(activeShooter.dbId, sessionId, points);
+
+      setShooters(
+        shooters.map((shooter) => {
+          if (shooter.id === activeShooterId) {
+            return {
+              ...shooter,
+              totalScore: shooter.totalScore + points,
+              shots: [...shooter.shots, newShot],
+            };
+          }
+          return shooter;
+        })
+      );
+
+      toast({
+        title: points > 0 ? 'Очки добавлены! 🎯' : 'Очки вычтены',
+        description: `${points > 0 ? '+' : ''}${points} баллов`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось сохранить выстрел',
+        variant: 'destructive',
+      });
+    }
   };
 
   const undoLastShot = () => {
@@ -132,7 +243,7 @@ export default function Index() {
 
     toast({
       title: 'Выстрел отменен',
-      description: 'Последний результат удален',
+      description: 'Последний результат удален (только локально)',
     });
   };
 
@@ -168,6 +279,97 @@ export default function Index() {
           <h1 className="text-4xl md:text-5xl font-bold mb-2 text-white">Тир 🎯</h1>
           <p className="text-muted-foreground text-lg">Система подсчета очков</p>
         </div>
+
+        <Card className="p-6 mb-6 bg-gradient-to-r from-primary/10 to-accent/10">
+          <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
+            <div className="flex-1">
+              {sessionId ? (
+                <div>
+                  <Badge className="text-lg px-4 py-2 bg-accent">
+                    <Icon name="Activity" size={20} className="mr-2" />
+                    Активная сессия #{sessionId}
+                  </Badge>
+                  <p className="text-sm text-muted-foreground mt-2">Добавляйте участников и результаты</p>
+                </div>
+              ) : (
+                <div>
+                  <Input
+                    placeholder="Название сессии (необязательно)"
+                    value={sessionName}
+                    onChange={(e) => setSessionName(e.target.value)}
+                    className="mb-2"
+                  />
+                  <p className="text-sm text-muted-foreground">Создайте новую сессию для начала</p>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2">
+              {!sessionId ? (
+                <Button onClick={startNewSession} size="lg" className="bg-accent hover:bg-accent/90">
+                  <Icon name="Play" size={20} className="mr-2" />
+                  Начать сессию
+                </Button>
+              ) : (
+                <Button onClick={saveSession} size="lg" variant="outline">
+                  <Icon name="Save" size={20} className="mr-2" />
+                  Сохранить и завершить
+                </Button>
+              )}
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button variant="secondary" size="lg" onClick={loadHistory}>
+                    <Icon name="Database" size={20} className="mr-2" />
+                    История
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle>История сессий</DialogTitle>
+                  </DialogHeader>
+                  {isLoadingHistory ? (
+                    <div className="text-center py-8">Загрузка...</div>
+                  ) : savedSessions.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      Сохраненных сессий пока нет
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {savedSessions.map((session) => (
+                        <Card key={session.id} className="p-4">
+                          <div className="flex justify-between items-start mb-2">
+                            <div>
+                              <h3 className="font-bold text-lg">{session.name}</h3>
+                              <p className="text-sm text-muted-foreground">
+                                {new Date(session.created_at).toLocaleString('ru')}
+                              </p>
+                            </div>
+                            {session.completed_at && (
+                              <Badge variant="outline">Завершена</Badge>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-3 gap-4 mt-4">
+                            <div className="text-center">
+                              <div className="text-2xl font-bold text-primary">{session.shooter_count}</div>
+                              <div className="text-xs text-muted-foreground">Участников</div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-2xl font-bold text-accent">{session.shot_count}</div>
+                              <div className="text-xs text-muted-foreground">Выстрелов</div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-2xl font-bold text-white">{session.total_score}</div>
+                              <div className="text-xs text-muted-foreground">Всего очков</div>
+                            </div>
+                          </div>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </DialogContent>
+              </Dialog>
+            </div>
+          </div>
+        </Card>
 
         <Tabs defaultValue="score" className="space-y-6">
           <TabsList className="grid w-full grid-cols-3 max-w-md mx-auto">

@@ -1,0 +1,42 @@
+{
+  "tests": [
+    {
+      "name": "Create new session",
+      "method": "POST",
+      "path": "/?action=create-session",
+      "body": {
+        "name": "Test Session"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "session_id": "number",
+        "name": "string"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Create new shooter",
+      "method": "POST",
+      "path": "/?action=create-shooter",
+      "body": {
+        "name": "Test Shooter"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "shooter_id": "number",
+        "name": "string"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get all sessions",
+      "method": "GET",
+      "path": "/?action=get-sessions",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "sessions": "array"
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}
